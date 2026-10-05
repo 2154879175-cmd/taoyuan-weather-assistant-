@@ -850,18 +850,23 @@ const gname = g => T(g.zh, g.en);   /* 虫害世代名 */
 /* ================= 结束参数区 ================= */
 
 const $ = id => document.getElementById(id);
-const G = { fc:null, idxToday:-1, today:null, gddMap:null, bloom:null, loc:0, calY:0, calM:0, events:{}, pheno:null, gddOffset:0, bloomRaw:null };
-const CACHE_VER = "v7", CACHE_TTL = 3600 * 1000;
+const G = { fc:null, idxToday:-1, today:null, gddMap:null, bloom:null, loc:0, dataLoc:null, calY:0, calM:0, events:{}, pheno:null, gddOffset:0, bloomRaw:null, chill:null, staleAt:null, weatherUnavailable:false };
+const CACHE_VER = "v8", CACHE_TTL = 3600 * 1000;
 function cacheGet(k, allowStale){
   try{
     const r=localStorage.getItem("om:"+CACHE_VER+":"+k);
     if(!r) return null;
     const o=JSON.parse(r);
+    o.v.__cachedAt=o.t;
     if(Date.now()-o.t<=CACHE_TTL) return o.v;
     return allowStale?o.v:null;      /* 过期缓存：正常不用，失败时救急 */
   }catch(e){ return null; }
 }
-function cacheSet(k,v){ try{ localStorage.setItem("om:"+CACHE_VER+":"+k, JSON.stringify({t:Date.now(),v})); }catch(e){} }
+function cacheSet(k,v){
+  const t=Date.now();
+  try{ localStorage.setItem("om:"+CACHE_VER+":"+k, JSON.stringify({t,v})); }catch(e){}
+  v.__cachedAt=t;
+}
 async function fetchJSON(url, key, force){
   const k = key||url;
   if(!force){ const c=cacheGet(k); if(c) return c; }
@@ -907,6 +912,9 @@ function gddSeries(dates, tmax, tmin, base){
 function stageOf(gdd){ let st=STAGES[0]; for(const s of STAGES){ if(gdd>=s.gdd) st=s; } return st; }
 function fmtDate(iso){ return iso.slice(5).replace("-","/"); }
 const todayISO = i => new Date().toLocaleDateString("sv-SE",{timeZone:LOCATIONS[i==null?G.loc:i][4]});
+const dateUTC = iso => new Date(iso+"T00:00:00Z");
+function addDaysISO(iso, days){ const d=dateUTC(iso); d.setUTCDate(d.getUTCDate()+days); return d.toISOString().slice(0,10); }
+const daysBetweenISO = (a,b) => Math.round((dateUTC(a)-dateUTC(b))/86400000);
 function pad(n){ return (n<10?"0":"")+n; }
 let toastTimer=null;
 function showToast(msg){
@@ -1062,38 +1070,55 @@ function extendGdd72WithForecast(rd){
 async function loadRegion(idx, force){
   const fc = await fetchJSON(fcURL(idx), "fc108:"+idx, force);
   const tAll = fc.daily.time;
-  let idxToday = tAll.indexOf(todayISO(idx)); if(idxToday<0) idxToday = tAll.length-1;
+  const idxToday = tAll.indexOf(todayISO(idx));
+  if(idxToday<0) throw new Error("Forecast does not cover the current date");
   const today = tAll[idxToday];
   const year = today.slice(0,4);
-  const lag = new Date(today); lag.setDate(lag.getDate()-6);
-  const lagS = lag.toLocaleDateString("sv-SE");
-  const arc = await fetchJSON(arcDailyURL(year+"-01-01", lagS, idx), "arcm"+lagS+":"+idx, force);
-  const gdd = gddSeries(arc.daily.time, arc.daily.temperature_2m_max, arc.daily.temperature_2m_min, 4.5);
-  const gdd72 = gddSeries(arc.daily.time, arc.daily.temperature_2m_max, arc.daily.temperature_2m_min, PEST.base);   /* 虫害积温（7.2℃ 基点） */
+  const lagS = addDaysISO(today,-6);
+  const arc = lagS>=year+"-01-01" ? await fetchJSON(arcDailyURL(year+"-01-01", lagS, idx), "arcm"+lagS+":"+idx, force) : null;
+  const gdd = arc ? gddSeries(arc.daily.time, arc.daily.temperature_2m_max, arc.daily.temperature_2m_min, 4.5) : {};
+  const gdd72 = arc ? gddSeries(arc.daily.time, arc.daily.temperature_2m_max, arc.daily.temperature_2m_min, PEST.base) : {};   /* 虫害积温（7.2℃ 基点） */
   for(let i=0;i<=idxToday;i++){
     const d=tAll[i];
-    if(d>lagS && gdd[d]===undefined){
+    if(d>=year+"-01-01" && d>lagS && gdd[d]===undefined){
       const tx=fc.daily.temperature_2m_max[i], tn2=fc.daily.temperature_2m_min[i];
       const inc=(tx!=null&&tn2!=null)?Math.max(0,(tx+tn2)/2-4.5):0;
-      gdd[d]=(i>0?gdd[tAll[i-1]]:0)+inc;
-      if(gdd72[tAll[i-1]]!==undefined) gdd72[d]=gdd72[tAll[i-1]]+((tx!=null&&tn2!=null)?Math.max(0,(tx+tn2)/2-PEST.base):0);
+      gdd[d]=(gdd[tAll[i-1]]||0)+inc;
+      gdd72[d]=(gdd72[tAll[i-1]]||0)+((tx!=null&&tn2!=null)?Math.max(0,(tx+tn2)/2-PEST.base):0);
     }
   }
-  const rd={ idx:idx, fc:fc, idxToday:idxToday, today:today, gddMap:gdd, gddMap72:gdd72, bloom:null, bloomRaw:null, pheno:null, gddOffset:0, events:{} };
+  const rd={ idx:idx, fc:fc, idxToday:idxToday, today:today, gddMap:gdd, gddMap72:gdd72, bloom:null, bloomRaw:null, pheno:null, gddOffset:0, events:{}, staleAt:Math.min(...[fc,arc].filter(x=>x&&x.__stale).map(x=>x.__cachedAt)) };
   extendGdd72WithForecast(rd);   /* 虫害窗口可能落在未来 16 天预报段，需沿预报续算 */
   let bloom=null;
-  for(const d of arc.daily.time){ if(d>=year+"-02-01" && gdd[d]>=BLOOM_GDD){ bloom=d; break; } }
+  for(const d of Object.keys(gdd).sort()){ if(d>=year+"-02-01" && gdd[d]>=BLOOM_GDD){ bloom=d; break; } }
   rd.bloom=bloom; rd.bloomRaw=bloom;
   applyPhenoOverride(rd);   /* 该产区的物候上报（如有）只作用于 rd，不碰 G */
   return rd;
 }
+let refreshSeq=0;
+function clearWeather(unavailable){
+  G.fc=null; G.idxToday=-1; G.today=null; G.gddMap=null; G.gddMap72=null; G.bloom=null; G.events={}; G.chill=null; G.staleAt=null; G.weatherUnavailable=!!unavailable;
+  for(const id of ["plan-body","f1-body","f2-body","f3-body","f4-body","f5-body","pest-body"]){
+    $(id).innerHTML='<p class="muted">'+(unavailable?T("这个产区的数据暂时无法获取，请联网后刷新。","This region’s data is unavailable. Reconnect and refresh."):T("正在获取这个产区的数据…","Loading this region’s data…"))+'</p>';
+  }
+  for(const id of ["chart-f1","chart-f2","chart-f3","chart-risk"]) $(id).innerHTML="";
+  for(const id of ["h-bloom","h-harvest","h-risk","h-chill"]) $(id).textContent="–";
+  $("cal-grid").innerHTML="";
+}
 async function refreshAll(force){
+  const idx=G.loc, seq=++refreshSeq;
+  if(G.dataLoc!==idx){ G.calY=0; G.calM=0; }
+  if(G.dataLoc!==idx || (G.today && G.today!==todayISO(idx))) clearWeather();
   try{
     $("fresh").textContent = T("正在取天气…","Fetching weather…");
-    const rd = await loadRegion(G.loc, force);
-    if(rd.fc.__stale) showToast(T("当前网络不畅，先为您显示最近一次成功获取的数据","Weak connection — showing the last data fetched"));
-    G.fc = rd.fc; G.idxToday = rd.idxToday; G.today = rd.today;
-    $("fresh").textContent = T("已更新到 ","Updated ")+new Date().toLocaleTimeString(T("zh-CN","en-US"),{hour:"2-digit",minute:"2-digit"});
+    const rd = await loadRegion(idx, force);
+    if(seq!==refreshSeq || idx!==G.loc) return;
+    if(Number.isFinite(rd.staleAt)) showToast(T("当前网络不畅，先为您显示最近一次成功获取的数据","Weak connection — showing the last data fetched"));
+    G.fc = rd.fc; G.idxToday = rd.idxToday; G.today = rd.today; G.chill=null; G.staleAt=rd.staleAt; G.weatherUnavailable=false;
+    G.dataLoc=idx;
+    $("fresh").textContent = Number.isFinite(rd.staleAt)
+      ? T("缓存数据 · 上次获取 ","Cached data · fetched ")+new Date(rd.staleAt).toLocaleString(T("zh-CN","en-US"))
+      : T("已更新到 ","Updated ")+new Date().toLocaleTimeString(T("zh-CN","en-US"),{hour:"2-digit",minute:"2-digit"});
     cdLeft = AUTO_MIN*60;
     G.gddMap = rd.gddMap;
     G.gddMap72 = rd.gddMap72;
@@ -1103,11 +1128,14 @@ async function refreshAll(force){
     renderPhenoBox();
     buildEvents();
     renderF1(); renderF4(); renderF5(); renderPest(); renderF3(); renderCal(); updateHero();
-    renderF2(force).catch(e=>{ $("f2-body").innerHTML='<p class="err">'+T("今冬气温数据暂时无法获取，请稍后点击「刷新」重试。","Winter temperature data unavailable right now — tap “Refresh” later to retry.")+'</p>'; });
+    renderF2(force,seq,idx).catch(e=>{ if(seq===refreshSeq) $("f2-body").innerHTML='<p class="err">'+T("今冬气温数据暂时无法获取，请稍后点击「刷新」重试。","Winter temperature data unavailable right now — tap “Refresh” later to retry.")+'</p>'; });
     renderPlan();
     renderFavBtn();
     refreshMyOrchards();   /* 「我的园子」摘要条：异步补各收藏产区，不阻塞主产区渲染 */
   }catch(e){
+    if(seq!==refreshSeq || idx!==G.loc) return;
+    if(!G.fc || G.today!==todayISO(idx)) clearWeather(true);
+    G.weatherUnavailable=true;
     $("fresh").innerHTML = '<span class="err">'+T("暂时无法获取气象数据，请检查网络后点击「刷新」重试","Weather data unavailable — check your connection and tap “Refresh”")+'</span>';
     showToast(T("气象数据暂时无法获取，正在为您重试或显示最近一次数据","Weather data unavailable — retrying or showing the last data"));
   }
@@ -1120,11 +1148,11 @@ function updateHero(){
   if(G.bloom){
     let best=null;
     for(const v of varieties()){
-      const hd=new Date(G.bloom); hd.setDate(hd.getDate()+v[2]);
-      const left=Math.round((hd-new Date(G.today))/86400000);
+      const hd=addDaysISO(G.bloom,v[2]);
+      const left=daysBetweenISO(hd,G.today);
       if(left>=-7 && (!best || left<best.left)) best={left, v, hd};
     }
-    if(best){ hv=vName(best.v)+" "+fmtDate(best.hd.toLocaleDateString("sv-SE")); hs=best.left>=0?T("距今 "+best.left+" 天",best.left+" days away"):T("窗口进行中","window open"); }
+    if(best){ hv=vName(best.v)+" "+fmtDate(best.hd); hs=best.left>=0?T("距今 "+best.left+" 天",best.left+" days away"):T("窗口进行中","window open"); }
   }
   $("h-harvest").textContent=hv; $("h-harvest-s").textContent=hs;
   let risk=0;
@@ -1136,9 +1164,9 @@ function updateHero(){
   }
   $("h-risk").textContent=risk?risk+" 天":"0 天";
   $("h-risk").innerHTML = risk ? risk+' <span style="font-size:12px;color:var(--warn)">'+T("天","days")+'</span>' : '0 <span style="font-size:12px;color:var(--accent)">'+T("天","days")+'</span>';
-  const m=new Date().getMonth()+1;
-  if(m<=3||m>=11) $("h-chill").textContent=T("计算中","Calculating");
-  else $("h-chill").textContent=window.__chill!=null?(window.__chill+" h"):T("见下方","see below");
+  const m=monthOf(G.today);
+  if(m<=3||m>=11) $("h-chill").textContent=G.chill!=null?(G.chill+" h"):T("计算中","Calculating");
+  else $("h-chill").textContent=G.chill!=null?(G.chill+" h"):T("见下方","see below");
 }
 
 /* ---------- 事件总线 ----------
@@ -1170,17 +1198,13 @@ function buildEvents(rd){
     if(pw.some(w=>date>=w.start&&date<=w.end)) add(date,{k:"pest",cls:"ct-pest",label:L.pest,tip:T("梨小食心虫防治窗口","Oriental fruit moth spray window")});
   }
   if(g.bloom){
-    const bd=new Date(g.bloom);
     for(const v of varieties(g.idx)){
-      const hd=new Date(bd); hd.setDate(hd.getDate()+v[2]);
-      add(hd.toLocaleDateString("sv-SE"),{k:"harvest",cls:"ct-harvest",label:L.pick+vName(v),tip:T(vName(v)+" 估算采收窗口（盛花+"+v[2]+" 天）",vName(v)+" pick window (full bloom +"+v[2]+" d)")});
+      const hd=addDaysISO(g.bloom,v[2]);
+      add(hd,{k:"harvest",cls:"ct-harvest",label:L.pick+vName(v),tip:T(vName(v)+" 估算采收窗口（盛花+"+v[2]+" 天）",vName(v)+" pick window (full bloom +"+v[2]+" d)")});
     }
-    const t1=new Date(bd); t1.setDate(t1.getDate()+25);
-    const t2=new Date(bd); t2.setDate(t2.getDate()+35);
-    const t3=new Date(bd); t3.setDate(t3.getDate()+56);
-    add(t1.toLocaleDateString("sv-SE"),{k:"thin",cls:"ct-thin",label:L.thin,tip:T("疏果定果开始（盛花后约 25 天），10 天内完成","Fruit thinning starts (~25 d after full bloom), finish within 10 days")});
-    add(t2.toLocaleDateString("sv-SE"),{k:"bag",cls:"ct-bag",label:L.bag,tip:T("套袋开始（盛花后约 35 天，疏果完成后进行）","Bagging starts (~35 d after full bloom, after thinning)")});
-    add(t3.toLocaleDateString("sv-SE"),{k:"bag",cls:"ct-bag",label:L.bag,tip:T("套袋收尾（中晚熟品种最迟这天前后完成）","Finish bagging (mid/late varieties by this day)")});
+    add(addDaysISO(g.bloom,25),{k:"thin",cls:"ct-thin",label:L.thin,tip:T("疏果定果开始（盛花后约 25 天），10 天内完成","Fruit thinning starts (~25 d after full bloom), finish within 10 days")});
+    add(addDaysISO(g.bloom,35),{k:"bag",cls:"ct-bag",label:L.bag,tip:T("套袋开始（盛花后约 35 天，疏果完成后进行）","Bagging starts (~35 d after full bloom, after thinning)")});
+    add(addDaysISO(g.bloom,56),{k:"bag",cls:"ct-bag",label:L.bag,tip:T("套袋收尾（中晚熟品种最迟这天前后完成）","Finish bagging (mid/late varieties by this day)")});
   }
   let dry=0; const dryEnd=[];
   for(let i=g.idxToday;i>=0;i--){ const p=d.precipitation_sum[i]; if(p!=null&&p>=1) break; dry++; dryEnd.push(t[i]); }
@@ -1213,11 +1237,9 @@ function buildPlan(rd){
     if(month>=5&&month<=9&&tm>=16&&wetHi&&lastD!==t[i]){ A.push({date:t[i],lv:"yel",title:T("这几天小桃容易得疮痂病","Scab weather ahead"),why:T("高温高湿天气，疮痂病最容易上幼果","Hot, humid weather hits young fruit with scab"),how:T("落花后到采前一个半月是关键，提前 1–2 天打保护剂；用什么药听科技小院和植保站的","The window from petal fall to 6 weeks before picking is critical — spray protectants 1–2 days ahead; follow local extension for products")}); lastD=t[i]; }
   }
   if(g.bloom){
-    const bd=new Date(g.bloom);
     for(const v of varieties(g.idx)){
-      const hd=new Date(bd); hd.setDate(hd.getDate()+v[2]);
-      const left=Math.round((hd-new Date(g.today))/86400000);
-      const w=hd.toLocaleDateString("sv-SE");
+      const w=addDaysISO(g.bloom,v[2]);
+      const left=daysBetweenISO(w,g.today);
       if(left>=0&&left<=30){
         if(left<=3) A.push({date:g.today,lv:"red",title:T(vName(v)+"该摘了！",vName(v)+" is ready to pick!"),why:T("今年大约 "+fmtDate(w)+" 前后成熟（还剩 "+left+" 天）","Ripens around "+fmtDate(w)+" this year ("+left+" days left)"),how:T("按桃子成熟度分批摘；盯着天气预报挑晴天摘；提前把纸箱/礼盒和买家联系好","Pick in passes by ripeness; watch the forecast and pick on a dry day; line up boxes/gift packs and buyers early")});
         else if(left<=10) A.push({date:g.today,lv:"yel",title:T(vName(v)+"快熟了，开始准备",vName(v)+" is almost ripe — start preparing"),why:T("预计 "+fmtDate(w)+" 前后能采（还剩 "+left+" 天）","Pick expected around "+fmtDate(w)+" ("+left+" days away)"),how:T("叫好人手、备好筐和包装、联系电商或客商；看这周哪天晴就定哪天摘","Book pickers, crates and packaging, contact e-commerce or traders; pick the first clear day this week")});
@@ -1225,9 +1247,9 @@ function buildPlan(rd){
       }
     }
     const mk=(off,lvNear,ti,wi,hi)=>{
-      const d2=new Date(bd); d2.setDate(d2.getDate()+off);
-      const left=Math.round((d2-new Date(g.today))/86400000);
-      if(left>=-5&&left<=35) A.push({date:left<0?g.today:d2.toLocaleDateString("sv-SE"),lv:left<=7?lvNear:"ok",title:T(ti[0],ti[1]),why:T(wi[0],wi[1]),how:T(hi[0],hi[1])});
+      const d2=addDaysISO(g.bloom,off);
+      const left=daysBetweenISO(d2,g.today);
+      if(left>=-5&&left<=35) A.push({date:left<0?g.today:d2,lv:left<=7?lvNear:"ok",title:T(ti[0],ti[1]),why:T(wi[0],wi[1]),how:T(hi[0],hi[1])});
     };
     mk(25,"yel",
       ["疏果定果：这 10 天把多余的桃疏掉","Thinning week: knock off the excess fruit"],
@@ -1288,9 +1310,9 @@ function fbCopy(txt){
 
 /* ---------- 月历 ---------- */
 function calMove(n){ G.calM+=n; while(G.calM<0){G.calM+=12;G.calY--;} while(G.calM>11){G.calM-=12;G.calY++;} renderCal(); }
-function calToday(){ const n=new Date(); G.calY=n.getFullYear(); G.calM=n.getMonth(); renderCal(); }
+function calToday(){ const iso=todayISO(); G.calY=Number(iso.slice(0,4)); G.calM=monthOf(iso)-1; renderCal(); }
 function renderCal(){
-  if(!G.calY){ const n=new Date(); G.calY=n.getFullYear(); G.calM=n.getMonth(); }
+  if(!G.calY){ const iso=todayISO(); G.calY=Number(iso.slice(0,4)); G.calM=monthOf(iso)-1; }
   const y=G.calY, m=G.calM;
   $("cal-title").textContent = T(y+" 年 "+(m+1)+" 月",(m+1)+"/"+y);
   const cpb=$("cal-pheno"); if(cpb) cpb.style.display=G.pheno?"":"none";   /* 物候人工修正徽标 */
@@ -1309,10 +1331,10 @@ function renderCal(){
   for(let i=0;i<tail;i++) html+='<div class="cal-cell dim"></div>';
   $("cal-grid").innerHTML=html;
   let bar="";
-  const base=new Date();
+  const base=dateUTC(todayISO());
   for(let off=-2;off<=9;off++){
-    const dd=new Date(base.getFullYear(),base.getMonth()+off,1);
-    const yy=dd.getFullYear(), mm=dd.getMonth();
+    const dd=new Date(Date.UTC(base.getUTCFullYear(),base.getUTCMonth()+off,1));
+    const yy=dd.getUTCFullYear(), mm=dd.getUTCMonth();
     let cnt=0;
     for(const iso in G.events){ if(iso.startsWith(yy+"-"+pad(mm+1))) cnt+=G.events[iso].length; }
     const on=(yy===y&&mm===m)?" on":"";
@@ -1416,20 +1438,32 @@ async function loadReplay(){
     box.innerHTML="<table class='tb'><tr><th>"+T("年份","Year")+"</th><th>"+T("那年开花大约在","Bloom was around")+"</th><th>"+T("险些受冻的天数","Near-miss frost days")+"</th><th>"+T("会严重受冻的天数","Severe frost days")+"</th></tr>"+rows.join("")+"</table>";
   }catch(e){ box.innerHTML='<p class="err">'+T("往年数据暂时无法获取，请稍后重试。","Past-year data unavailable — try again later.")+'</p>'; }
 }
-async function renderF2(force){
-  const body=$("f2-body"); const now=new Date(); const m=now.getMonth()+1;
-  let start,end,label;
-  if(m>=11){ start=now.getFullYear()+"-11-01"; end=(now.getFullYear()+1)+"-03-31"; label=T("本休眠季","This dormancy season: "); }
-  else if(m<=3){ start=(now.getFullYear()-1)+"-11-01"; end=now.getFullYear()+"-03-31"; label=T("本休眠季","This dormancy season: "); }
-  else { start=(now.getFullYear()-1)+"-11-01"; end=now.getFullYear()+"-03-31"; label=T("刚过去的这个冬天，","Last winter: "); }
+let chillSeq=0;
+async function renderF2(force,seq=refreshSeq,idx=G.loc){
+  const body=$("f2-body"), today=G.today, m=monthOf(today), year=Number(today.slice(0,4));
+  const ownSeq=++chillSeq;
+  let start,end,currentSeason;
+  if(m>=11){ start=year+"-11-01"; end=(year+1)+"-03-31"; currentSeason=true; }
+  else if(m<=3){ start=(year-1)+"-11-01"; end=year+"-03-31"; currentSeason=true; }
+  else { start=(year-1)+"-11-01"; end=year+"-03-31"; currentSeason=false; }
+  const historicalEnd=addDaysISO(today,-1);
+  if(end>historicalEnd) end=historicalEnd;
+  if(end<start){
+    G.chill=0; updateHero();
+    body.innerHTML='<p class="muted">'+T("本休眠季刚开始，历史低温数据尚未更新。","This dormancy season has just begun; historical chill data is not available yet.")+'</p>';
+    $("chart-f2").innerHTML="";
+    return;
+  }
   body.innerHTML='<p class="muted">'+T("正在翻这个冬天的气温记录…","Digging through this winter's temperature records…")+'</p>';
-  const d=await fetchJSON(arcHourlyURL(start,end),"chill"+start+":"+G.loc,force);
+  const d=await fetchJSON(arcHourlyURL(start,end,idx),"chill"+start+":"+end+":"+idx,force);
+  if(seq!==refreshSeq || ownSeq!==chillSeq || idx!==G.loc) return;
   let chill=0; const monthly={};
   for(let i=0;i<d.hourly.time.length;i++){
     const v=d.hourly.temperature_2m[i];
     if(v!=null&&v>=0&&v<=7.2){ chill++; const mo=d.hourly.time[i].slice(0,7); monthly[mo]=(monthly[mo]||0)+1; }
   }
-  window.__chill=chill; updateHero();
+  G.chill=chill; updateHero();
+  const label=currentSeason?T("本休眠季，","This dormancy season: "):T("刚过去的这个冬天，","Last winter: ");
   const pct=Math.min(100,Math.round(chill/1200*100));
   const light=chill>=800?"l-ok":chill>=400?"l-yel":"l-red";
   body.innerHTML='<p class="big"><span class="light '+light+'"></span>'+label+T("桃树已攒够 <b>"+chill+"</b> 小时低温（需要约 700–1200 小时）","trees have banked <b>"+chill+"</b> chill hours (about 700–1,200 needed)")+"</p>"+
@@ -1460,12 +1494,12 @@ function renderF3(){
   $("variety-note").textContent=T(v[3],v[4]);
   const body=$("f3-body");
   if(!G.bloom){ body.innerHTML=(G.pheno?'<p style="margin:0 0 8px"><span class="badge b-ok">'+T("按您上报的物候计算","Using your reported phenology")+"</span></p>":"")+'<p class="muted">'+T("等春天开花的日子估出来后，这里就显示各品种的采摘时间…","Once this spring's bloom date is estimated, pick windows for each variety appear here…")+'</p>'; return; }
-  const hd=new Date(G.bloom); hd.setDate(hd.getDate()+v[2]);
-  const days=Math.round((hd-new Date())/86400000);
-  const w1=new Date(hd); w1.setDate(w1.getDate()-3);
-  const w2=new Date(hd); w2.setDate(w2.getDate()+7);
+  const hd=addDaysISO(G.bloom,v[2]);
+  const days=daysBetweenISO(hd,G.today);
+  const w1=addDaysISO(hd,-3);
+  const w2=addDaysISO(hd,7);
   const MON=["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
-  const f=x=>LANG==="zh"?(x.getMonth()+1)+" 月 "+x.getDate()+" 日":MON[x.getMonth()]+" "+x.getDate();
+  const f=iso=>LANG==="zh"?monthOf(iso)+" 月 "+Number(iso.slice(8))+" 日":MON[monthOf(iso)-1]+" "+Number(iso.slice(8));
   let level="l-ok",word=T("未到采收准备期，正常管理即可","Not in the pick-prep window — normal care for now");
   if(days<0){ word=T("按今年花期推算，本品种采收期已过","By this year's bloom estimate, this variety's pick window has passed"); level="l-gry"; }
   else if(days<=21){ word=T("临近采收期：建议提前安排人手与销路，成熟后择晴天采收","Getting close: book pickers and buyers early, and pick on a dry day once ripe"); level="l-yel"; }
@@ -1481,33 +1515,33 @@ function renderF3(){
   $("f3-note").innerHTML=T("未来 16 天哪天晴（熟了就挑晴天摘）：","Clear days in the next 16 (pick on a dry day once ripe):");
   body.insertAdjacentHTML("beforeend",'<div style="display:grid;grid-template-columns:repeat(8,1fr);gap:4px;margin-top:8px">'+cells.join("")+"</div>");
   const W=420,rowH=17,pl=58,pr=10;
-  const spans=varieties().map(v2=>{ const a=new Date(G.bloom); a.setDate(a.getDate()+v2[2]-3);
-    const b=new Date(G.bloom); b.setDate(b.getDate()+v2[2]+7); return [vName(v2),a,b]; });
-  const minD=new Date(G.bloom);
-  let maxD=new Date(G.bloom);
+  const spans=varieties().map(v2=>[vName(v2),dateUTC(addDaysISO(G.bloom,v2[2]-3)),dateUTC(addDaysISO(G.bloom,v2[2]+7))]);
+  const minD=dateUTC(G.bloom);
+  let maxD=dateUTC(G.bloom);
   spans.forEach(sp=>{ if(sp[2]>maxD) maxD=sp[2]; });
   const total=(maxD-minD)/86400000||1;
   const xOf=d=>pl+((d-minD)/86400000)/total*(W-pl-pr);
   let s='<svg viewBox="0 0 '+W+" "+(spans.length*rowH+30)+'" role="img" aria-label="各品种采摘日历图">';
   // 今天竖线
-  const todayD=new Date(G.today);
+  const todayD=dateUTC(G.today);
   if(todayD>=minD&&todayD<=maxD){
     const xt=xOf(todayD);
     s+='<line x1="'+xt.toFixed(1)+'" y1="2" x2="'+xt.toFixed(1)+'" y2="'+(spans.length*rowH+8)+'" stroke="#047857" stroke-width="1.2" stroke-dasharray="3 3"/>';
     s+='<text x="'+xt.toFixed(1)+'" y="10" font-size="8.5" fill="#047857" text-anchor="middle">'+T("今天","Today")+'</text>';
   }
   // 月份刻度
-  let md=new Date(minD); md.setDate(1); md.setMonth(md.getMonth()+1);
+  let md=new Date(minD); md.setUTCDate(1); md.setUTCMonth(md.getUTCMonth()+1);
   while(md<maxD){
     const xm=xOf(md);
     s+='<line x1="'+xm.toFixed(1)+'" y1="14" x2="'+xm.toFixed(1)+'" y2="'+(spans.length*rowH+8)+'" stroke="#e7e5e4" stroke-width="1"/>';
-    s+='<text x="'+xm.toFixed(1)+'" y="'+(spans.length*rowH+20)+'" font-size="8.5" fill="#a8a29e" text-anchor="middle">'+(md.getMonth()+1)+T("月","")+"</text>";
-    md.setMonth(md.getMonth()+1);
+    s+='<text x="'+xm.toFixed(1)+'" y="'+(spans.length*rowH+20)+'" font-size="8.5" fill="#a8a29e" text-anchor="middle">'+(md.getUTCMonth()+1)+T("月","")+"</text>";
+    md.setUTCMonth(md.getUTCMonth()+1);
   }
   spans.forEach((sp,i)=>{
     const x1=xOf(sp[1]), x2=xOf(sp[2]);
     s+='<text x="0" y="'+(i*rowH+20)+'" font-size="9.5" fill="#1c1917" font-weight="600">'+sp[0]+"</text>";
-    s+='<rect x="'+x1.toFixed(1)+'" y="'+(i*rowH+12)+'" width="'+Math.max(6,x2-x1).toFixed(1)+'" height="9" rx="4.5" fill="#c2410c" opacity=".78"><title>'+sp[0]+T("：大约 "+sp[1].toLocaleDateString("sv-SE")+" 起能采，"+sp[2].toLocaleDateString("sv-SE")+" 前采完",": pickable from ~"+sp[1].toLocaleDateString("sv-SE")+" to "+sp[2].toLocaleDateString("sv-SE"))+"</title></rect>";
+    const start=sp[1].toISOString().slice(0,10), end=sp[2].toISOString().slice(0,10);
+    s+='<rect x="'+x1.toFixed(1)+'" y="'+(i*rowH+12)+'" width="'+Math.max(6,x2-x1).toFixed(1)+'" height="9" rx="4.5" fill="#c2410c" opacity=".78"><title>'+sp[0]+T("：大约 "+start+" 起能采，"+end+" 前采完",": pickable from ~"+start+" to "+end)+"</title></rect>";
   });
   $("chart-f3").innerHTML='<div style="display:flex;align-items:center;gap:8px;font-size:11.5px;color:var(--ink-3);margin-bottom:4px"><span style="display:inline-block;width:14px;height:8px;border-radius:4px;background:#c2410c;opacity:.75"></span>= '+T("可采摘的日子","days you can pick")+"</div>"+s;
 }
@@ -1590,9 +1624,7 @@ function pestWindows(rd){
     let peak=null;
     for(const d of keys){ if(d>=g.bloom && g.gddMap72[d]>=target){ peak=d; break; } }
     if(!peak) continue;
-    const s=new Date(peak); s.setDate(s.getDate()-PEST.win);
-    const e=new Date(peak); e.setDate(e.getDate()+PEST.win);
-    out.push({ g:gen, target, peak, start:s.toLocaleDateString("sv-SE"), end:e.toLocaleDateString("sv-SE") });
+    out.push({ g:gen, target, peak, start:addDaysISO(peak,-PEST.win), end:addDaysISO(peak,PEST.win) });
   }
   return out;
 }
@@ -1619,7 +1651,7 @@ function renderPest(){
     word=T(gname(w.g)+"防治窗口进行中（到 "+fmtDate(w.end)+"）",gname(w.g)+" spray window open (until "+fmtDate(w.end)+")");
   }else if(upcoming.length){
     light="l-yel"; const w=upcoming[0];
-    const days=Math.round((new Date(w.start)-new Date(G.today))/86400000);
+    const days=daysBetweenISO(w.start,G.today);
     word=T("距 "+gname(w.g)+"防治窗口约 "+days+" 天（"+fmtDate(w.start)+" 起）","About "+days+" days to the "+gname(w.g)+" window (from "+fmtDate(w.start)+")");
   }else{
     light="l-ok";
@@ -1875,7 +1907,10 @@ function applyStaticLang(){
   S(".cta-row .btn-primary",T("查看农事安排","See the plan"));
   S(".cta-row .btn-ghost",T("打开农事月历","Open the calendar"));
   S(".hero-tool .tool-head .t",T("您家桃园 · 今日速览","Your orchard · today at a glance"));
-  if(G.fc){ $("fresh").textContent=T("已更新到 ","Updated ")+new Date().toLocaleTimeString(T("zh-CN","en-US"),{hour:"2-digit",minute:"2-digit"}); }
+  if(G.weatherUnavailable){ $("fresh").textContent=T("暂时无法获取气象数据，请检查网络后点击「刷新」重试","Weather data unavailable — check your connection and tap “Refresh”"); }
+  else if(G.fc){ $("fresh").textContent=Number.isFinite(G.staleAt)
+    ? T("缓存数据 · 上次获取 ","Cached data · fetched ")+new Date(G.staleAt).toLocaleString(T("zh-CN","en-US"))
+    : T("已更新到 ","Updated ")+new Date().toLocaleTimeString(T("zh-CN","en-US"),{hour:"2-digit",minute:"2-digit"}); }
   else { $("fresh").textContent=T("数据加载中…","Loading data…"); }
   const HS=[["花期预估","Bloom (est.)","按冬春积温推算","from winter-spring GDD"],["最近采收品种","Next to pick","早熟品种最先","early varieties first"],["未来 16 天关注日","Watch days (next 16)","霜冻和发病天气","frost & disease weather"],["休眠期低温累计","Winter chill so far","0–7.2℃ 小时累计","0–7.2°C hours banked"]];
   document.querySelectorAll(".hero-tool .stat-grid .stat-cell").forEach((cell,i)=>{
@@ -2020,7 +2055,7 @@ function setLang(lang){
   try{ localStorage.setItem("taoyuan-lang", LANG); }catch(e){}
   applyStaticLang();
   buildLocOptions();
-  if(G.fc){ renderF1(); renderF4(); renderF5(); renderPest(); renderF3(); renderCal(); updateHero(); renderPlan(); }
+  if(G.fc){ renderF1(); renderF4(); renderF5(); renderPest(); renderF3(); renderCal(); updateHero(); renderPlan(); renderF2(false).catch(()=>{}); }
   renderStats();
 }
 let cdLeft=AUTO_MIN*60;
