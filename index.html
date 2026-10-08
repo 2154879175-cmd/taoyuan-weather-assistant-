@@ -2020,7 +2020,7 @@ function setLang(lang){
   try{ localStorage.setItem("taoyuan-lang", LANG); }catch(e){}
   applyStaticLang();
   buildLocOptions();
-  if(G.fc){ renderF1(); renderF4(); renderF5(); renderPest(); renderF3(); renderCal(); updateHero(); renderPlan(); }
+  if(G.fc){ renderF1(); renderF2().catch(()=>{}); renderF4(); renderF5(); renderPest(); renderF3(); renderCal(); updateHero(); renderPlan(); }   /* F2 异步：数据走 localStorage 缓存，离线失败保留原文案 */
   renderStats();
 }
 let cdLeft=AUTO_MIN*60;
