@@ -766,7 +766,7 @@ footer { border-top: 1px solid var(--line); padding: 32px 0 40px; margin-top: 18
 
 <footer>
   <div class="wrap foot-inner">
-    <p>开发：彭宇程 · 中国农业大学未来技术学院暑期实践小队。免费使用，数据每半小时自动更新，也可点刷新。农事建议供参考，重要决策请咨询当地植保部门。<span style="color:var(--ink-3)">（版本 v4.3）</span></p>
+    <p>开发：彭宇程 · 梁扬益 · 中国农业大学未来技术学院暑期实践小队。免费使用，数据每半小时自动更新，也可点刷新。农事建议供参考，重要决策请咨询当地植保部门。<span style="color:var(--ink-3)">（版本 v4.3）</span></p>
     <div class="links">
       <a href="#plan">推进方案</a>
       <a href="#calendar">月历</a>
@@ -821,7 +821,7 @@ try{ LANG = localStorage.getItem("taoyuan-lang") || ((navigator.language||"").to
 const T = (zh,en) => LANG==="zh"?zh:en;
 const COUNTRY_NAMES = { CN:["中国","China"], US:["美国","United States"], JP:["日本","Japan"] };
 /* 地区表：[中文名, 纬度, 经度, 国家码, 时区, 英文名]
-   除平谷 10 镇外，按站点访问量前三国各选 2 个著名大桃产区（如与你 Cloudflare 后台前三不一致，改这里即可）：
+   除平谷 10 镇外，另收录 6 个国内外著名大桃产区（如需增删，改这里即可，含坐标/时区/双语名）：
    中国：山东蒙阴（“中国蜜桃之都”，产量第一县）、河北深州（深州蜜桃·国家地理标志）
    美国：佐治亚州桃县 Peach County（“桃州”心脏）、加州圣华金谷 Fresno（最大鲜食桃产区）
    日本：山梨笛吹川流域（桃产量第一县）、福岛市周边（著名白桃产地） */
@@ -2232,7 +2232,7 @@ function applyStaticLang(){
     "<li>💾 "+T("「我的记录」支持一键导出/导入，换手机不丢上报数据","Export/import your records as a file when switching phones")+"</li></ul></div></div>"+
     '<div class="log-item"><div class="log-ver"><span class="v">v4.1</span><span class="d">2026/09/20</span></div><div class="log-body"><div class="t">'+T("会说英语了，还把服务范围扩到了著名桃产区","Now speaks English, and covers famous peach regions")+"</div><ul>"+
     "<li>🌐 "+T("中英双语一键切换，首次访问按浏览器语言自动选择","One-tap Chinese/English switch; first visit follows your browser language")+"</li>"+
-    "<li>🗺️ "+T("除平谷 10 镇外，新增山东蒙阴、河北深州、美国佐治亚桃县、加州圣华金谷、日本山梨、福岛 6 个著名桃产区（按站点访问量前三国）","Beyond Pinggu's 10 towns: Mengyin (Shandong), Shenzhou (Hebei), Peach County (Georgia, USA), San Joaquin Valley (CA, USA), Yamanashi and Fukushima (Japan) — the top-3 visiting countries")+"</li>"+
+    "<li>🗺️ "+T("除平谷 10 镇外，新增山东蒙阴、河北深州、美国佐治亚桃县、加州圣华金谷、日本山梨、福岛 6 个国内外著名桃产区","Beyond Pinggu's 10 towns: Mengyin (Shandong), Shenzhou (Hebei), Peach County (Georgia, USA), San Joaquin Valley (CA, USA), Yamanashi and Fukushima (Japan)")+"</li>"+
     "<li>🍑 "+T("品种表按国家切换：美国 Redhaven、Elberta 等，日本 白凤、あかつき 等","Variety lists switch by country: Redhaven/Elberta (US), Hakuhou/Akatsuki (JP)")+"</li>"+
     "<li>⏰ "+T("各产区按当地时区取数与排日程","Each region fetches and schedules in its own timezone")+"</li>"+
     "<li>📊 "+T("新增「这个月有多少人在用」：显示过去 30 天访问量（当前为手工更新数字，来自 Cloudflare 无 Cookie 匿名统计；也可配置自动接口转每日曲线）","New traffic panel: past-30-days visits (manual figure from Cloudflare's cookieless analytics; an automatic daily-feed option is also built in)")+"</li></ul></div></div>"+
@@ -2276,7 +2276,7 @@ function applyStaticLang(){
     '<div class="wc-btns"><button class="btn btn-primary" id="welcomeStart">'+T("开始使用","Get started")+'</button><button class="btn btn-ghost" id="welcomeLater">'+T("稍后再看","Later")+'</button></div>'+
     '<p class="wc-foot">'+T("每次升级加了什么，拉到底部「更新日志」都能查到。","Every release is logged at the bottom under “Changelog”.")+"</p>");
   /* 页脚 */
-  S("footer .foot-inner p",T("开发：彭宇程 · 中国农业大学未来技术学院暑期实践小队。免费使用，数据每半小时自动更新，也可点刷新。农事建议供参考，重要决策请咨询当地植保部门。<span style=\"color:var(--ink-3)\">（版本 v4.3）</span>","Built by Peng Yucheng · China Agricultural University summer field team. Free to use; data refreshes every 30 minutes, or tap refresh. Advice is for reference — for major decisions consult your local plant-protection service. <span style=\"color:var(--ink-3)\">(v4.3)</span>"));
+  S("footer .foot-inner p",T("开发：彭宇程 · 梁扬益 · 中国农业大学未来技术学院暑期实践小队。免费使用，数据每半小时自动更新，也可点刷新。农事建议供参考，重要决策请咨询当地植保部门。<span style=\"color:var(--ink-3)\">（版本 v4.3）</span>","Built by Peng Yucheng & Liang Yangyi · China Agricultural University summer field team. Free to use; data refreshes every 30 minutes, or tap refresh. Advice is for reference — for major decisions consult your local plant-protection service. <span style=\"color:var(--ink-3)\">(v4.3)</span>"));
   S("footer .links",'<a href="#plan">'+T("推进方案","Plan")+'</a><a href="#calendar">'+T("月历","Calendar")+'</a><a href="#howto">'+T("说明","About")+"</a>");
 }
 function setLang(lang){
