@@ -68,6 +68,7 @@ async function main() {
     buildEvents: noop, renderF1: noop, renderF4: noop, renderF5: noop,
     renderPest: noop, renderF3: noop, renderCal: noop, updateHero: noop,
     renderF2: async () => {}, renderPlan: noop, renderFavBtn: noop,
+    renderHourlyFrost: noop, renderRecordForms: noop, loadHourlyFrost: noop, renderObservationHistory: noop,
     refreshMyOrchards: noop
   });
   vm.runInContext(section("let refreshSeq=0;", "function updateHero(") + "globalThis.refreshAll=refreshAll;", refresh);
